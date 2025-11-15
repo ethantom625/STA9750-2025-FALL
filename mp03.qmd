@@ -1,0 +1,469 @@
+---
+title: "Mini-Project #03"
+format: html
+execute:
+  echo: true
+  warning: false
+  error: false
+---
+
+
+```{r}
+#| code-fold: true
+library(sf)
+library(dplyr)
+
+DATA <- sf::st_read('data/nycc_25c/nycc.shp')
+DATA <- sf::st_transform(DATA, crs = "WGS84")
+
+```
+
+```{r}
+#| code-fold: true
+library(httr2)
+library(sf)
+library(dplyr)
+library(glue)
+
+download_treepoints <- function(
+    base_url = "https://data.cityofnewyork.us/resource/hn5i-inap.geojson",
+    out_dir = "data/mp03",
+    limit = 10000
+) {
+
+  # Create output directory if not exists
+  if (!dir.exists(out_dir)) {
+    dir.create(out_dir, recursive = TRUE)
+  }
+
+  offset <- 0
+  page <- 1
+  downloaded_files <- c()
+
+  repeat {
+
+    out_file <- file.path(
+      out_dir,
+      glue("treepoints_{sprintf('%04d', page)}.geojson")
+    )
+
+    # Skip file if already downloaded
+    if (!file.exists(out_file)) {
+
+      message(glue("Downloading page {page}: offset={offset}, limit={limit}"))
+
+      req <- request(base_url) |>
+        req_url_query(`$limit` = limit, `$offset` = offset)
+
+      resp <- req_perform(req)
+
+      writeBin(resp_body_raw(resp), out_file)
+
+    } else {
+      message(glue("Skipping page {page} — file already exists."))
+    }
+
+    downloaded_files <- c(downloaded_files, out_file)
+
+    # Read the file to determine if this is the last page
+    temp <- suppressWarnings(st_read(out_file, quiet = TRUE))
+
+    if (nrow(temp) < limit) {
+      message("Reached end of dataset.")
+      break
+    }
+
+    offset <- offset + limit
+    page <- page + 1
+  }
+
+  # ---- Reading & combining all pages safely ----
+
+  message("Reading all downloaded GeoJSON files...")
+
+  safe_read <- function(f) {
+  x <- suppressWarnings(st_read(f, quiet = TRUE))
+
+  # Keep geometry untouched
+  geom_col <- attr(x, "sf_column")         # name of geometry column
+  classes  <- sapply(x, inherits, "sfc")   # detect sfc column robustly
+  geom_col <- names(classes[classes])      # detect via class, never wrong
+
+  # convert all NON-geometry columns to character
+  non_geom <- setdiff(names(x), geom_col)
+  x[non_geom] <- lapply(x[non_geom], as.character)
+
+  return(x)   # still a valid sf object
+}
+
+  data_list <- lapply(downloaded_files, safe_read)
+
+  message("Combining pages with bind_rows()...")
+
+  final <- bind_rows(data_list)
+
+  message("Done! Returning final sf object.")
+  return(final)
+  final <- st_as_sf(final, sf_column_name = attr(data_list[[1]], "sf_column"))
+  
+}
+trees <- download_treepoints()
+
+```
+
+```{r}
+#| code-fold: true
+library(ggplot2)
+
+ggplot() +
+  
+  # Layer 1: Council district polygons
+  geom_sf(data = DATA,
+          fill = NA,
+          color = "black",
+          linewidth = 0.3) +
+  
+  # Layer 2: Tree points
+  geom_sf(data = trees,
+          aes(),
+          color = "darkgreen",
+          alpha = 0.01,
+          size = 0.01) +
+  
+  coord_sf() +
+  labs(
+    title = "NYC Trees Overlaid on City Council Districts",
+    caption = "Data: NYC Open Data"
+  ) +
+  theme_minimal()
+
+
+
+
+```
+
+```{r}
+#| code-fold: true
+library(sf)
+library(dplyr)
+
+
+trees_with_districts <- st_join(
+  trees,
+  DATA,
+  join = st_intersects
+)
+            
+
+
+```
+
+```{r}
+#| code-fold: true
+library(sf)
+library(dplyr)
+
+
+district_count <- trees_with_districts %>%
+  st_drop_geometry() %>%
+  count(CounDist) 
+
+max_tree_count <- district_count %>%
+  slice_max(order_by = n, n = 1, with_ties = FALSE) %>%
+  pull(CounDist) 
+    
+
+
+```
+### Which council district has the most trees?
+
+The council district with the most trees is `r max_tree_count`.
+
+
+```{r}
+#| code-fold: true
+library(sf)
+library(dplyr)
+
+trees_w_districts <- st_join(
+  trees, DATA %>% 
+    select(CounDist, Shape_Area),  join = st_intersects
+)
+district_count <- trees_w_districts %>%
+  st_drop_geometry() %>%
+  group_by(CounDist) %>%
+  summarise(
+    n = n(),
+    Shape_Area = first(Shape_Area)
+  )
+tree_density <- district_count %>%
+  mutate(tree_density = n / Shape_Area)
+
+highest_density <- tree_density %>%
+  slice_max(order_by = n, n = 1, with_ties = FALSE) %>%
+  pull(CounDist) 
+
+
+```
+### Which council district has the highest density of trees?
+
+The council district with the highest density of trees is `r highest_density`.
+
+
+```{r}
+#| code-fold: true
+district_count <- trees_with_districts %>%
+  st_drop_geometry() %>%
+  count(CounDist)
+district_count_dead <- trees_with_districts %>%
+  st_drop_geometry() %>%
+  filter(tpcondition == "Dead" ) %>%
+  count(CounDist)
+
+district_count_dead <- left_join(district_count, district_count_dead, 
+            join_by(CounDist == CounDist)) %>%
+  mutate(ratio_dead = n.y / n.x)
+
+most_dead <- district_count_dead %>%
+  slice_max(order_by = ratio_dead, n = 1, with_ties = FALSE) %>%
+  pull(CounDist)
+
+most_dead
+```
+### Which district has highest fraction of dead trees out of all trees?
+
+The district with the highest fraction of dead trees is `r most_dead`.
+
+```{r}
+#| code-fold: true
+library(dplyr)
+
+
+trees_with_districts <- trees_with_districts %>%
+  mutate(Borough = 
+           case_when(
+             CounDist %in% 1:10 ~ "Manhattan",
+        CounDist %in% 11:18 ~ "Bronx",
+        CounDist %in% 19:32 ~ "Brooklyn",
+        CounDist %in% 33:48 ~ "Queens",
+        CounDist %in% 49:51 ~ "Staten Island",
+        TRUE ~ "Unknown"
+           )
+  )
+
+species_in_manhattan <- trees_with_districts %>%
+  filter(Borough == "Manhattan") %>%
+    st_drop_geometry() %>%
+  count(genusspecies)
+
+most_common_manhattan <- species_in_manhattan %>%
+  slice_max(order_by = n, n = 1, with_ties = FALSE) %>%
+  pull(genusspecies)
+
+```
+###What is the most common tree species in Manhattan?
+
+The most common tree species in Manhattan is `r most_common_manhattan`.
+
+```{r}
+#| code-fold: true
+library(dplyr)
+
+new_st_point <- function(lat, lon, ...){
+    # st_sfc expects x, y which flips the normal lat (N/S) + lon (W/E) ordering
+    st_sfc(point = st_point(c(lon, lat))) |>
+      st_set_crs("WGS84")
+}
+
+baruch_point <- new_st_point(lat = 40.7404, lon = -73.9832)
+
+dist_baruch <- trees_with_districts %>%
+  filter(Borough == "Manhattan") %>%
+  mutate(distance = st_distance(geometry, baruch_point))
+
+closest_species <- dist_baruch %>%
+  slice_min(order_by = distance, n = 1, with_ties = FALSE) %>%
+  pull(genusspecies)
+
+closest_tree <- dist_baruch %>%
+  slice_min(order_by = distance, n = 1, with_ties = FALSE) 
+
+```
+###What is the species of the tree closest to Baruch’s campus?
+The species of the tree closest to Baruch Campus is `r closest_species`.
+
+
+```{r}
+#| code-fold: true
+library(ggplot2)
+library(dplyr)
+
+manhattan_trees <- trees_with_districts %>%
+  filter(Borough == "Manhattan") %>%
+      st_drop_geometry() %>%
+  count(CounDist)
+
+manhattan_dead_trees <- trees_with_districts %>%
+  filter(Borough == "Manhattan") %>%
+  filter(tpcondition == "Dead") %>%
+      st_drop_geometry() %>%
+  count(CounDist)
+
+manhattan_dead_trees <- left_join(manhattan_trees, manhattan_dead_trees, 
+            join_by(CounDist == CounDist)) %>%
+  mutate(ratio_dead = n.y / n.x)
+
+manhat_most_dead <- manhattan_dead_trees %>%
+  slice_max(order_by = ratio_dead, n = 1, with_ties = FALSE) %>%
+  pull(CounDist)
+
+data_dist_two <- DATA %>%
+    filter(CounDist == 2)
+
+
+distr_two <- trees_with_districts %>%
+  filter(CounDist == 2)
+
+distr_two_count <- distr_two %>%
+      st_drop_geometry() %>%
+  count(CounDist)
+
+distr_two_dead <- trees_with_districts %>%
+  filter(CounDist == 2) %>%
+  filter(tpcondition == "Dead")
+
+
+distr_two_dead_count <- distr_two %>%
+  filter(tpcondition == "Dead") %>%
+      st_drop_geometry() %>%
+  count(CounDist)
+
+dead_tree_plot <- ggplot() +
+  
+  # Layer 1: Council district polygons
+  geom_sf(data = data_dist_two,
+          fill = NA,
+          color = "black",
+          linewidth = 0.3) +
+  
+  # Layer 2: Tree points
+  geom_sf(data = distr_two_dead,
+          aes(),
+          color = "red",
+          alpha = 1,
+          size = 1) +
+  
+  coord_sf() +
+  labs(
+    title = "District 2's Dead Trees Overlaid",
+    caption = "Data: NYC Open Data"
+  ) +
+  theme_minimal()
+dead_tree_plot
+```
+
+```{r}
+#| code-fold: true
+library(ggplot2)
+library(dplyr)
+
+
+data_dist_two <- DATA %>%
+    filter(CounDist == 2)
+
+distr_two_alive <- trees_with_districts %>%
+  filter(CounDist == 2) %>%
+  filter(tpcondition != "Dead")
+
+distr_two_dead <- trees_with_districts %>%
+  filter(CounDist == 2) %>%
+  filter(tpcondition == "Dead")
+
+dist_two_plot <- ggplot() +
+  
+  # Layer 1: Council district polygons
+  geom_sf(data = data_dist_two,
+          fill = NA,
+          color = "black",
+          linewidth = 0.3) +
+  
+  # Layer 2: Tree points
+  geom_sf(data = distr_two_alive,
+          aes(),
+          color = "darkgreen",
+          alpha = .5,
+          size = .5) +
+  
+  # Layer 3: Tree points
+  geom_sf(data = distr_two_dead,
+          aes(),
+          color = "red",
+          alpha = .5,
+          size = .5) +
+  
+  coord_sf() +
+  labs(
+    title = "District 2's Trees, Dead or Alive Overlaid",
+    caption = "Data: NYC Open Data"
+  ) +
+  theme_minimal()
+
+data_dist_three <- DATA %>%
+    filter(CounDist == 3)
+
+distr_three_alive <- trees_with_districts %>%
+  filter(CounDist == 3) %>%
+  filter(tpcondition != "Dead")
+
+distr_three_dead <- trees_with_districts %>%
+  filter(CounDist == 3) %>%
+  filter(tpcondition == "Dead")
+
+dist_three_plot <- ggplot() +
+  
+  # Layer 1: Council district polygons
+  geom_sf(data = data_dist_three,
+          fill = NA,
+          color = "black",
+          linewidth = 0.3) +
+  
+  # Layer 2: Tree points
+  geom_sf(data = distr_three_alive,
+          aes(),
+          color = "darkgreen",
+          alpha = .5,
+          size = .5) +
+  
+  # Layer 3: Tree points
+  geom_sf(data = distr_three_dead,
+          aes(),
+          color = "red",
+          alpha = .5,
+          size = .5) +
+  
+  coord_sf() +
+  labs(
+    title = "District 3's Trees, Dead or Alive Overlaid",
+    caption = "Data: NYC Open Data"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+
+### Government Tree Project Proposal
+We are proposing to begin a tree project within district 2. We are seeking to being the replacement of the dead trees within Manhattan, beginning with district 2. District 2 was chose as it was the Manhattan district that had the highest ratio of dead trees. The start of their removal for replacement for new young trees would be of great benefit to the ecosystems and environments of the surrounding area. Seeing as there are `r distr_two_count` trees in district 2 but there are `r distr_two_dead_count` dead trees, it would be in our best interest to begin on the project as soon as possible.
+```{r}
+#| code-fold: true
+dead_tree_plot
+```
+This project makes sense for this district as it has the highest ratio of dead trees of all districts within Manhattan. It would be a good place to start compared to the other 9.It may not have the most dead trees to tackle for the project but with the higher density, the effects of replacement may show quicker due to the difference in percentage of trees being replaced.
+```{r}
+#| code-fold: true
+dist_two_plot 
+dist_three_plot
+```
+Looking at both district 2 and 3, we can see that there are less problem areas across the whole district. When cleaning theses areas, there should be a noticeable change in the environment and ecosystem with these new healthy trees being put in their place.
+
