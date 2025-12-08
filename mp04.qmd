@@ -7,6 +7,9 @@ execute:
   error: false
 ---
 
+### The Firing of Dr. McEntarfer as Head of the Bureau of Labor Statistics
+The firing of Dr. McEntarfer by President Trump came to a surprise to many and was strong criticism on data collection and data analysis performed independent from the government. By many, this has been seen as a political move more so to combat the criticism President Trump has been under regarding his ability to recover the economy post-covid. Following the firing, Bill Beach, who Trump had previously had in the position, commented that the suggestion that McEntarfer rigged the jobs report portrayed a misunderstanding in the way the data is collected and handled within the bureau. 
+
 ```{r}
 #| code-fold: true
 
@@ -306,8 +309,7 @@ yr2018and2024 <- combined %>%
 
 ```
 
-### Reaction To the Firing of Dr. McEntarfer
-The firing of Dr. McEntarfer by President Trump came to a surprise to many and was strong criticism on data collection and data analysis performed independent from the government. By many, this has been seen as a political move more so to combat the criticism President Trump has been under regarding his ability to recover the economy post-covid. Following the firing, Bill Beach, who Trump had previously had in the position, commented that the suggestion that McEntarfer rigged the jobs report portrayed a misunderstanding in the way the data is collected and handled within the bureau. 
+### Reaction to McEntarfer Firing
 
 Bill Beach stated, "The totally groundless firing of Dr. Erika McEntarfer, my successor as Commissioner of Labor Statistics at BLS, sets a dangerous precedent and undermines the statistical mission of the Bureau."
 This claim by Bill Beach appears to be mostly true as there do not appear to be any statistical irregularities to the handling of the job data particularly related to the revisions. Trump's main gripe refers primarily to the revisions of employment numbers where the numbers show an under performance in making up job numbers during his presidency. When reviewing the number of revisions and their comparisons to the pre-COVID numbers, the p-value comparison for an increase in revisions or that of larger revisions comes larger than .05 (`{r} paste0("avg.rev.p.val = ", round(avg.rev.p.val, 4), "; large.rev.p.val = ", round(large.rev.p.val, 4))`). There does not appear to be any irregularity as it pertains to the way in which the revisions were put together.
