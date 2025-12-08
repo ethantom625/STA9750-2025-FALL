@@ -17,9 +17,7 @@ library(stringr)
 library(tidyr)
 library(lubridate)
 
-# ===========================================
-# 1. Replicate BLS PDQ POST request
-# ===========================================
+
 req <- request("https://data.bls.gov/pdq/SurveyOutputServlet") %>%
   req_method("POST") %>%
   req_headers(
@@ -42,33 +40,30 @@ req <- request("https://data.bls.gov/pdq/SurveyOutputServlet") %>%
 resp <- req %>% req_perform()
 html <- resp %>% resp_body_html()
 
-# ===========================================
-# 2. Extract HTML table
-# ===========================================
 
 tbl <- html %>%
   html_elements("table") %>%
-  .[[2]] %>%               # <-- GET SECOND TABLE
+  .[[2]] %>%              
   html_table(fill = TRUE)
 
 
 clean_tbl <- tbl %>%
-  # Keep only rows with valid years
+
   filter(str_detect(Year, "^[0-9]{4}$")) %>%
   
-  # Pivot all month columns into long format
+
   pivot_longer(
     cols = -Year,
     names_to = "Month",
     values_to = "level"
   ) %>%
   
-  # Convert to numeric
+
   mutate(level = as.numeric(str_replace_all(level, ",", ""))) %>%
   
-  # Build date column
+
   mutate(
-    Month = match(Month, month.abb),  # Convert "Jan", "Feb", etc. to numeric month
+    Month = match(Month, month.abb),  
     date = make_date(as.integer(Year), Month, 1)
   ) %>%
   
@@ -76,15 +71,13 @@ clean_tbl <- tbl %>%
   select(date, level) %>%
   arrange(date)
 
-# ===========================================
-# 4. Filter to required window
-# ===========================================
+
 
 result <- clean_tbl %>%
   filter(date >= ym("1979-01"),
          date <= ym("2025-06"))
 
-result
+#result
 
 ```
 
@@ -98,33 +91,33 @@ library(tidyr)
 library(lubridate)
 library(purrr)
 
-# Step 1a: create the request
+
 req <- request("https://www.bls.gov/web/empsit/cesnaicsrev.htm") %>%
   req_headers(
     "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/142.0.0.0 Safari/537.36"
   )
 
-# Step 1b: perform the request
+
 res <- req %>% req_perform()
 
-# Step 1c: parse the response as HTML
+
 html <- res %>% resp_body_html()
 
-# Step 1d: verify the HTML was loaded
-html
 
-# Get all tables
+#html
+
+
 tables <- html %>% html_elements("table")
 
-# Count how many tables are found
+
 length(tables)
 
-# Optionally, get the IDs of all tables
+
 table_ids <- html %>% html_elements("table") %>% html_attr("id")
-table_ids
+#table_ids
 
 tbl_2024 <- html %>% html_element("#2024") %>% html_table(header = FALSE)
-head(tbl_2024, 12)
+#head(tbl_2024, 12)
 
 parse_ces_year <- function(html_doc, year) {
   months <- month.abb
@@ -135,7 +128,7 @@ parse_ces_year <- function(html_doc, year) {
   tbl <- table_node %>% html_table(header = FALSE)
   
   df <- tbl %>%
-    filter(str_sub(X1, 1, 3) %in% months) %>%       # only month rows
+    filter(str_sub(X1, 1, 3) %in% months) %>%      
     mutate(
       original = as.numeric(str_replace_all(X3, ",", "")),
       final    = as.numeric(str_replace_all(X5, ",", "")),
@@ -143,9 +136,9 @@ parse_ces_year <- function(html_doc, year) {
       month_num = match(str_sub(X1,1,3), month.abb),
       date = make_date(year, month_num, 1)
     ) %>%
-    drop_na(original, final) %>%                     # remove any leftover placeholder rows
-    group_by(month_num) %>%                          # keep only first occurrence per month
-    slice_head(n = 1) %>%                            # first row is the actual 2025 number
+    drop_na(original, final) %>%                    
+    group_by(month_num) %>%                          
+    slice_head(n = 1) %>%                           
     ungroup() %>%
     select(date, original, final, revision)
   
@@ -155,12 +148,6 @@ parse_ces_year <- function(html_doc, year) {
 
   
 
-
-
-
-# ===========================================
-# 3. Apply function to all years and combine
-# ===========================================
 years <- 1979:2025
 
 ces_all <- map(years, ~ parse_ces_year(html, .x)) %>%
@@ -168,11 +155,9 @@ ces_all <- map(years, ~ parse_ces_year(html, .x)) %>%
   filter(date <= ym("2025-06")) %>%
   arrange(date)
 
-# ===========================================
-# 4. Inspect results
-# ===========================================
-head(ces_all)
-tail(ces_all)
+
+#head(ces_all)
+#tail(ces_all)
 ces_all
 
 ```
@@ -190,7 +175,7 @@ library(lubridate)
 combined <- result %>%
   left_join(ces_all, by = "date")
 
-#Inspect
+
 head(combined)
 tail(combined)
 
@@ -198,13 +183,12 @@ combined
 
 
 
-# Add additional useful columns
 ces_analysis <- combined %>%
   mutate(
     year      = year(date),
     month     = month(date),
     abs_revision  = abs(revision),
-    rel_revision  = abs_revision / final * 100,   # % of final estimate
+    rel_revision  = abs_revision / final * 100,  
     pos_revision  = revision > 0
   )
 
@@ -316,11 +300,12 @@ yr2018and2024 <- combined %>%
     avg_revision = mean(revision, na.rm = TRUE)
   )
 
-yr2018and2024
+#yr2018and2024
 
 
 
 ```
+
 ### Reaction To the Firing of Dr. McEntarfer
 The firing of Dr. McEntarfer by President Trump came to a surprise to many and was strong criticism on data collection and data analysis performed independent from the government. By many, this has been seen as a political move more so to combat the criticism President Trump has been under regarding his ability to recover the economy post-covid. Following the firing, Bill Beach, who Trump had previously had in the position, commented that the suggestion that McEntarfer rigged the jobs report portrayed a misunderstanding in the way the data is collected and handled within the bureau. 
 
