@@ -1,0 +1,359 @@
+---
+title: "Mini-Project #04"
+format: html
+execute:
+  echo: true
+  warning: false
+  error: false
+---
+
+```{r}
+#| code-fold: true
+
+library(httr2)
+library(rvest)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(lubridate)
+
+# ===========================================
+# 1. Replicate BLS PDQ POST request
+# ===========================================
+req <- request("https://data.bls.gov/pdq/SurveyOutputServlet") %>%
+  req_method("POST") %>%
+  req_headers(
+    "Content-Type" = "application/x-www-form-urlencoded"
+  ) %>%
+  req_body_form(
+    request_action = "get_data",
+    reformat = "true",
+    from_results_page = "true",
+    from_year = "1979",
+    to_year = "2025",
+    `Go.x` = "8",
+    `Go.y` = "10",
+    initial_request = "false",
+    data_tool = "surveymost",
+    series_id = "CES0000000001",
+    original_annualAveragesRequested = "false"
+  )
+
+resp <- req %>% req_perform()
+html <- resp %>% resp_body_html()
+
+# ===========================================
+# 2. Extract HTML table
+# ===========================================
+
+tbl <- html %>%
+  html_elements("table") %>%
+  .[[2]] %>%               # <-- GET SECOND TABLE
+  html_table(fill = TRUE)
+
+
+clean_tbl <- tbl %>%
+  # Keep only rows with valid years
+  filter(str_detect(Year, "^[0-9]{4}$")) %>%
+  
+  # Pivot all month columns into long format
+  pivot_longer(
+    cols = -Year,
+    names_to = "Month",
+    values_to = "level"
+  ) %>%
+  
+  # Convert to numeric
+  mutate(level = as.numeric(str_replace_all(level, ",", ""))) %>%
+  
+  # Build date column
+  mutate(
+    Month = match(Month, month.abb),  # Convert "Jan", "Feb", etc. to numeric month
+    date = make_date(as.integer(Year), Month, 1)
+  ) %>%
+  
+  drop_na(level, date) %>%
+  select(date, level) %>%
+  arrange(date)
+
+# ===========================================
+# 4. Filter to required window
+# ===========================================
+
+result <- clean_tbl %>%
+  filter(date >= ym("1979-01"),
+         date <= ym("2025-06"))
+
+result
+
+```
+
+```{r}
+#| code-fold: true
+
+library(rvest)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(lubridate)
+library(purrr)
+
+# Step 1a: create the request
+req <- request("https://www.bls.gov/web/empsit/cesnaicsrev.htm") %>%
+  req_headers(
+    "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/142.0.0.0 Safari/537.36"
+  )
+
+# Step 1b: perform the request
+res <- req %>% req_perform()
+
+# Step 1c: parse the response as HTML
+html <- res %>% resp_body_html()
+
+# Step 1d: verify the HTML was loaded
+html
+
+# Get all tables
+tables <- html %>% html_elements("table")
+
+# Count how many tables are found
+length(tables)
+
+# Optionally, get the IDs of all tables
+table_ids <- html %>% html_elements("table") %>% html_attr("id")
+table_ids
+
+tbl_2024 <- html %>% html_element("#2024") %>% html_table(header = FALSE)
+head(tbl_2024, 12)
+
+parse_ces_year <- function(html_doc, year) {
+  months <- month.abb
+  
+  table_node <- html_doc %>% html_element(paste0("#", year))
+  if (is.na(table_node) || length(table_node) == 0) return(NULL)
+  
+  tbl <- table_node %>% html_table(header = FALSE)
+  
+  df <- tbl %>%
+    filter(str_sub(X1, 1, 3) %in% months) %>%       # only month rows
+    mutate(
+      original = as.numeric(str_replace_all(X3, ",", "")),
+      final    = as.numeric(str_replace_all(X5, ",", "")),
+      revision = final - original,
+      month_num = match(str_sub(X1,1,3), month.abb),
+      date = make_date(year, month_num, 1)
+    ) %>%
+    drop_na(original, final) %>%                     # remove any leftover placeholder rows
+    group_by(month_num) %>%                          # keep only first occurrence per month
+    slice_head(n = 1) %>%                            # first row is the actual 2025 number
+    ungroup() %>%
+    select(date, original, final, revision)
+  
+  return(df)
+}
+
+
+  
+
+
+
+
+# ===========================================
+# 3. Apply function to all years and combine
+# ===========================================
+years <- 1979:2025
+
+ces_all <- map(years, ~ parse_ces_year(html, .x)) %>%
+  bind_rows() %>%
+  filter(date <= ym("2025-06")) %>%
+  arrange(date)
+
+# ===========================================
+# 4. Inspect results
+# ===========================================
+head(ces_all)
+tail(ces_all)
+ces_all
+
+```
+
+
+```{r}
+#| code-fold: true
+
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+
+
+combined <- result %>%
+  left_join(ces_all, by = "date")
+
+#Inspect
+head(combined)
+tail(combined)
+
+combined
+
+
+
+# Add additional useful columns
+ces_analysis <- combined %>%
+  mutate(
+    year      = year(date),
+    month     = month(date),
+    abs_revision  = abs(revision),
+    rel_revision  = abs_revision / final * 100,   # % of final estimate
+    pos_revision  = revision > 0
+  )
+
+# 1. Largest positive revision
+largest_pos_rev <- ces_analysis %>% slice_max(revision, n=1)
+
+# 2. Largest negative revision
+largest_neg_rev <- ces_analysis %>% slice_min(revision, n=1)
+
+# 3. Average absolute revision (overall)
+avg_abs_rev <- ces_analysis %>% summarise(mean_abs = mean(abs_revision, na.rm = TRUE))
+
+# 4. Average revision as % of final estimate
+avg_rel_rev <- ces_analysis %>% summarise(mean_pct = mean(rel_revision, na.rm = TRUE))
+
+# 5. Fraction of positive revisions per year
+pos_frac_by_year <- ces_analysis %>%
+  group_by(year) %>%
+  summarise(frac_pos = mean(pos_revision, na.rm = TRUE))
+
+# 6. Average absolute revision per month (seasonal effect)
+avg_rev_by_month <- ces_analysis %>%
+  group_by(month) %>%
+  summarise(mean_abs = mean(abs_revision, na.rm = TRUE))
+
+#largest_pos_rev
+#largest_neg_rev
+#avg_abs_rev
+#avg_rel_rev
+#pos_frac_by_year
+#avg_rev_by_month
+
+
+#########################################################################################
+
+
+# 1. Time series of original vs final CES estimates
+ggplot(ces_analysis, aes(x=date)) +
+  geom_line(aes(y=original, color="Original")) +
+  geom_line(aes(y=final, color="Final")) +
+  labs(title="CES Estimates: Original vs Final", y="Employment (thousands)", color="Estimate") +
+  theme_minimal()
+
+# 2. Revisions over time (positive/negative)
+graph2 <- ggplot(ces_analysis, aes(x=date, y=revision, fill=revision>0)) +
+  geom_col(show.legend=FALSE) +
+  scale_fill_manual(values=c("red", "green")) +
+  labs(title="CES Revisions Over Time", y="Revision", x="Date") +
+  theme_minimal()
+graph2
+
+# 3. Distribution of revision magnitudes (% of final)
+ggplot(ces_analysis, aes(x=rel_revision)) +
+  geom_histogram(bins=50, fill="steelblue", color="white") +
+  labs(title="Distribution of CES Revision Magnitudes (% of Final Estimate)", x="% Revision", y="Count") +
+  theme_minimal()
+
+# 4. Fraction of positive revisions by decade
+ces_analysis <- ces_analysis %>%
+  mutate(decade = year - year %% 10)
+
+pos_frac_by_decade <- ces_analysis %>%
+  group_by(decade) %>%
+  summarise(frac_pos = mean(pos_revision, na.rm=TRUE))
+
+graph1 <- ggplot(pos_frac_by_decade, aes(x=factor(decade), y=frac_pos)) +
+  geom_col(fill="darkblue") +
+  labs(title="Fraction of Positive CES Revisions by Decade", x="Decade", y="Fraction Positive") +
+  theme_minimal()
+graph1
+
+ces_analysis <- ces_analysis %>%
+  mutate(
+    big = abs(rel_revision) > 0.01,
+    era2020 = if_else(year(date) < 2020, "pre2020", "post2020")
+  )
+
+
+#Has the frequency of large revisions (>1%) increased after 2020?
+counts <- ces_analysis %>%
+  group_by(era2020) %>%
+  summarise(
+    big_count = sum(big, na.rm = TRUE),
+    total = n()
+  )
+#counts
+
+pt <- prop.test(
+  x = counts$big_count,
+  n = counts$total,
+  correct = FALSE  
+)
+
+large.rev.p.val <- pt$p.value
+
+#Has the average revision increased post-2020?
+avg.rev.p.val <- t.test(
+  revision ~ era2020,
+  data = ces_analysis,
+  var.equal = FALSE  
+)$p.value
+
+
+yr2018and2024 <- combined %>%
+  filter(year(date) %in% c(2018, 2024)) %>%
+  group_by(year = year(date)) %>%
+  summarise(
+    avg_final = mean(final, na.rm = TRUE),
+    avg_revision = mean(revision, na.rm = TRUE)
+  )
+
+yr2018and2024
+
+
+
+```
+###Reaction To the Firing of Dr. McEntarfer
+The firing of Dr. McEntarfer by President Trump came to a surprise to many and was strong criticism on data collection and data analysis performed independent from the government. By many, this has been seen as a political move more so to combat the criticism President Trump has been under regarding his ability to recover the economy post-covid. Following the firing, Bill Beach, who Trump had previously had in the position, commented that the suggestion that McEntarfer rigged the jobs report portrayed a misunderstanding in the way the data is collected and handled within the bureau. 
+
+Bill Beach stated, "The totally groundless firing of Dr. Erika McEntarfer, my successor as Commissioner of Labor Statistics at BLS, sets a dangerous precedent and undermines the statistical mission of the Bureau."
+This claim by Bill Beach appears to be mostly true as there do not appear to be any statistical irregularities to the handling of the job data particularly related to the revisions. Trump's main gripe refers primarily to the revisions of employment numbers where the numbers show an under performance in making up job numbers during his presidency. When reviewing the number of revisions and their comparisons to the pre-COVID numbers, the p-value comparison for an increase in revisions or that of larger revisions comes larger than .05 (`{r} paste0("avg.rev.p.val = ", round(avg.rev.p.val, 4), "; large.rev.p.val = ", round(large.rev.p.val, 4))`). There does not appear to be any irregularity as it pertains to the way in which the revisions were put together.
+```{r} 
+#| code-fold: true
+
+graph1
+```
+When looking at this graph, we even find that the proportion of positive revisions are not irregular to that of any other decade to indicate any "cooking of the books" that Trump claims.
+
+Jim Maybach(Fake Politician) additionally claimed that the revisions that were produced by McEntarfer were irregular compared to when Bill Beach acted as Trump's head of labor statistics. 
+```{r} 
+#| code-fold: true
+
+yr2018and2024
+```
+This claim would show to be false while looking at the compared averages of the revisions. When looking at the difference, there is no significant difference nominally between the two. There is a directional difference that exists but that can be a cause of different factors. There is no significant numeric abnormalities as it pertains to the way that the numbers are revised to indicate a favoritism to exaggerate the numbers.
+
+The bureau of labor statistics and most government data collecting departments are meant to remain bipartisan and the intention of data and statistics is to remain impartial and only produce what we can use to guage the state of the world around us. From the look of what McEntarfer's work has shown, her firing could set a poor precedent that partisan bias can contribute to biasing future data collection or public opinion regarding the validity of what is collected in the future.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
