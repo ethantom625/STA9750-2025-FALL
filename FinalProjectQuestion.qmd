@@ -6,6 +6,9 @@ execute:
   warning: false
   error: false
 ---
+### Point of Interest – How Film Production Signals Real Estate Change in New York City
+We at Point of Interest are tasked to see whether film production activity acts as an early signal — or even a catalyst — for rising real estate values in New York City neighborhoods. This question is a great way to look into possible indicators of emerging neighborhoods and how we can possibly look to invest in real estate in these areas. We look to see a correlation between real estate prices versus film production activity in areas. From our research, we find three sources of data that can help us investigate our question. We source our property sales data from the NYC.gov site from 2013 to 2023 as this ten-year span is a good time frame to investigate this question. We also pull data from film permitting from 2013 to 2023 and we get each film permit that was approved within New York City. This data source gives us a lot of information, but we are not looking at most of the very detailed information of each datum. Then we have rental data as this can also show an effect on none property sale situations so we look at each ZIP codes average monthly rent. These are all indicators that fit our criteria to peak at the correlation.
+
 
 ### Downloading Data Sets
 ## Property Sales
@@ -498,7 +501,7 @@ large_permits <- permits |>
 
 clean_permits
 ```
-These are view of our film permiting data from 2013-2023.Some of the information is not very important and can become more uniform later on in our work with all the data later down the line.
+These are view of our film permitting data from 2013-2023.Some of the information is not very important and can become more uniform later on in our work with all the data later down the line.
 
 
 ## Rental Data
