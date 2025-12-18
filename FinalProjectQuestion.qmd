@@ -1,5 +1,10 @@
 ---
 title: "Final Project Question"
+format: html
+execute:
+  echo: true
+  warning: false
+  error: false
 ---
 
 ### Downloading Data Sets
