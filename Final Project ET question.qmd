@@ -1,0 +1,810 @@
+---
+title: "Final Project Question"
+---
+
+### Downloading Data Sets
+## Property Sales
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+# ---- Setup download directory ----
+library(readxl)
+library(dplyr)
+library(janitor)
+
+data_dir <- "data/property_sales_raw"
+dir.create(data_dir, recursive = TRUE, showWarnings = FALSE)
+
+base_url <- "https://www.nyc.gov/assets/finance/downloads/pdf/rolling_sales/annualized-sales"
+
+years    <- 2013:2023
+boroughs <- c("bronx", "brooklyn", "manhattan", "queens", "statenisland")
+
+# Helper to try one URL and return success TRUE/FALSE
+safe_download <- function(url, dest) {
+  status <- tryCatch(
+    download.file(url, destfile = dest, mode = "wb", quiet = TRUE),
+    error = function(e) 1L
+  )
+  is.numeric(status) && status == 0L
+}
+
+# ---- Function to download one file ----
+download_one_file <- function(year, borough) {
+  # pick correct borough slug for the filename
+  borough_slug <- borough
+  if (borough == "statenisland" && year >= 2020) {
+    borough_slug <- "staten_island"   # 2020+ files use underscore
+  }
+
+  # older years = .xls, newer years = .xlsx
+  if (year <= 2017) {
+    exts <- c("xls", "xlsx")
+  } else {
+    exts <- c("xlsx", "xls")
+  }
+
+  for (ext in exts) {
+    url  <- sprintf("%s/%d/%d_%s.%s", base_url, year, year, borough_slug, ext)
+    dest <- file.path(data_dir, sprintf("%d_%s.%s", year, borough_slug, ext))
+
+    message("Trying: ", url)
+
+    if (safe_download(url, dest)) {
+      message("  ✓ downloaded: ", dest)
+      return(dest)
+    } else {
+      message("  ✗ failed for: ", url)
+    }
+  }
+
+  warning("Could not download file for ", year, " / ", borough)
+  NA_character_
+}
+
+
+# ---- Download ALL 2013–2023 files ----
+files <- unlist(
+  lapply(years, function(y) {
+    sapply(boroughs, download_one_file, year = y, simplify = TRUE)
+  })
+)
+
+# keep only successful downloads
+files <- files[!is.na(files)]
+
+# Quick check: which years did we actually download?
+download_years <- table(substr(basename(files), 1, 4))
+#print(download_years)
+
+# ---- Read and combine ----
+# ---- Read and combine (using BOROUGH row as header) ----
+library(readxl)
+library(dplyr)
+library(janitor)
+
+sales_list <- lapply(files, function(f) {
+
+  # read everything as text, no column names yet
+  raw <- read_excel(
+    path      = f,
+    col_names = FALSE,
+    col_types = "text"
+  )
+
+  # find the row that contains the real header ("BOROUGH ...")
+  header_row <- which(raw[[1]] == "BOROUGH")
+  if (length(header_row) == 0L) {
+    header_row <- which(grepl("BOROUGH", raw[[1]]))[1]
+  }
+  if (is.na(header_row)) {
+    stop("Could not find header row in file: ", f)
+  }
+
+  # use that row as column names, data starts on the next row
+  header <- as.character(unlist(raw[header_row, ]))
+  df <- raw[(header_row + 1):nrow(raw), ]
+  names(df) <- header
+
+  # drop completely empty rows/cols
+  df <- df %>%
+    remove_empty("rows") %>%
+    remove_empty("cols")
+
+  # add year from file name (e.g. "2019_bronx.xlsx")
+  name <- basename(f)
+  year <- as.numeric(substr(name, 1, 4))
+  df$year <- year
+
+  df
+})
+
+sales_2013_2023 <- bind_rows(sales_list)
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+library(dplyr)
+library(janitor)
+
+# ---- Split into 3 format groups ----
+sales_raw_2013_2017 <- sales_2013_2023 %>%
+  filter(year >= 2013, year <= 2017)
+
+sales_raw_2018_2019 <- sales_2013_2023 %>%
+  filter(year >= 2018, year <= 2019)
+
+sales_raw_2020_2023 <- sales_2013_2023 %>%
+  filter(year >= 2020, year <= 2023)
+
+# ---- Quick checks ----
+#message("Check years in each split:")
+#print(table(sales_raw_2013_2017$year))
+#print(table(sales_raw_2018_2019$year))
+#print(table(sales_raw_2020_2023$year))
+
+#message("Row counts:")
+#nrow(sales_raw_2013_2017)
+#nrow(sales_raw_2018_2019)
+#nrow(sales_raw_2020_2023)
+
+#message("Column counts (should be similar within each group):")
+#ncol(sales_raw_2013_2017)
+#ncol(sales_raw_2018_2019)
+#ncol(sales_raw_2020_2023)
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+clean_2013_2017 <- function(df) {
+  df %>%
+    clean_names() %>%
+    filter(borough %in% c("1","2","3","4","5")) %>%
+    mutate(
+      borough = case_when(
+        borough == "1" ~ "Manhattan",
+        borough == "2" ~ "Bronx",
+        borough == "3" ~ "Brooklyn",
+        borough == "4" ~ "Queens",
+        borough == "5" ~ "Staten Island"
+      ),
+      sale_price = suppressWarnings(as.numeric(gsub("[^0-9]", "", sale_price))),
+      sale_date  = suppressWarnings(as.Date(as.numeric(sale_date), origin = "1899-12-30"))
+    ) %>%
+    filter(!is.na(sale_price), sale_price > 10000) %>%
+    select(year, borough, neighborhood, address, zip_code, sale_price, sale_date) %>%
+    arrange(year, borough, sale_date)
+}
+
+sales_clean_2013_2017 <- clean_2013_2017(sales_raw_2013_2017)
+
+# ---- Quick checks ----
+#message("2013-2017 cleaned:")
+#summary(sales_clean_2013_2017$sale_price)
+#range(sales_clean_2013_2017$sale_date, na.rm = TRUE)
+#head(sales_clean_2013_2017)
+
+```
+
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+library(dplyr)
+library(janitor)
+library(stringr)
+library(lubridate)
+
+clean_2018_2019 <- function(df) {
+
+  df %>%
+    clean_names() %>%
+    
+    # Merge duplicate columns
+    mutate(
+      borough_code_raw = coalesce(borough, borough_2, borough_3),
+      neighborhood_raw = coalesce(neighborhood, neighborhood_2, neighborhood_3),
+      address_raw      = coalesce(address, address_2, address_3),
+      zip_code_raw     = coalesce(zip_code, zip_code_2, zip_code_3),
+      sale_price_raw   = coalesce(sale_price, sale_price_2, sale_price_3),
+      sale_date_raw    = coalesce(sale_date, sale_date_2, sale_date_3)
+    ) %>%
+    
+    # Borough code -> name
+    mutate(
+      borough_code_raw = trimws(borough_code_raw),
+      borough = case_when(
+        borough_code_raw == "1" ~ "Manhattan",
+        borough_code_raw == "2" ~ "Bronx",
+        borough_code_raw == "3" ~ "Brooklyn",
+        borough_code_raw == "4" ~ "Queens",
+        borough_code_raw == "5" ~ "Staten Island",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(borough)) %>%
+    
+    # Clean price
+    mutate(
+      sale_price = suppressWarnings(as.numeric(gsub("[^0-9]", "", sale_price_raw)))
+    ) %>%
+    
+    # ---- Robust date parsing ----
+    mutate(
+      # Try numeric Excel serial first
+      sale_date_num = suppressWarnings(as.numeric(sale_date_raw)),
+      date_from_num = suppressWarnings(as.Date(sale_date_num, origin = "1899-12-30")),
+
+      # Try character dates (mdy, ymd)
+      date_from_char = suppressWarnings(parse_date_time(sale_date_raw, orders = c("mdy", "ymd"))),
+
+      # Final date = numeric first, otherwise character-parsed
+      sale_date = coalesce(date_from_num, date_from_char)
+    ) %>%
+    
+    filter(!is.na(sale_price), sale_price > 10000, !is.na(sale_date)) %>%
+    
+    transmute(
+      year,
+      borough,
+      neighborhood = neighborhood_raw,
+      address      = address_raw,
+      zip_code     = zip_code_raw,
+      sale_price,
+      sale_date
+    ) %>%
+    arrange(year, borough, sale_date)
+}
+
+```
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+library(dplyr)
+library(janitor)
+library(stringr)
+library(lubridate)
+
+clean_2020_2023 <- function(df) {
+
+  df %>%
+    clean_names() %>%
+
+    # 1) Merge the duplicate columns (_2, _3) into one main set
+    mutate(
+      borough_code_raw = coalesce(borough, borough_2, borough_3),
+      neighborhood_raw = coalesce(neighborhood, neighborhood_2, neighborhood_3),
+      address_raw      = coalesce(address, address_2, address_3),
+      zip_code_raw     = coalesce(zip_code, zip_code_2, zip_code_3),
+      sale_price_raw   = coalesce(sale_price, sale_price_2, sale_price_3),
+      sale_date_raw    = coalesce(sale_date, sale_date_2, sale_date_3)
+    ) %>%
+
+    # 2) Borough code -> borough name
+    mutate(
+      borough_code_raw = trimws(borough_code_raw),
+      borough = case_when(
+        borough_code_raw == "1" ~ "Manhattan",
+        borough_code_raw == "2" ~ "Bronx",
+        borough_code_raw == "3" ~ "Brooklyn",
+        borough_code_raw == "4" ~ "Queens",
+        borough_code_raw == "5" ~ "Staten Island",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(borough)) %>%
+
+    # 3) Clean sale price
+    mutate(
+      sale_price = suppressWarnings(
+        as.numeric(gsub("[^0-9]", "", sale_price_raw))
+      )
+    ) %>%
+
+    # 4) Robust date parsing (Excel numbers + various text formats)
+    mutate(
+      sale_date_num  = suppressWarnings(as.numeric(sale_date_raw)),
+      date_from_num  = suppressWarnings(as.Date(sale_date_num, origin = "1899-12-30")),
+      date_from_char = suppressWarnings(
+        parse_date_time(sale_date_raw, orders = c("ymd", "mdy", "dmy"))
+      ),
+      sale_date      = coalesce(date_from_num, date_from_char)
+    ) %>%
+
+    # 5) Keep only reasonable, non-missing sales
+    filter(
+      !is.na(sale_price),
+      sale_price > 10000,
+      !is.na(sale_date)
+    ) %>%
+
+    # 6) Final columns in same format as other years
+    transmute(
+      year,
+      borough,
+      neighborhood = neighborhood_raw,
+      address      = address_raw,
+      zip_code     = zip_code_raw,
+      sale_price,
+      sale_date    = as.Date(sale_date)
+    ) %>%
+    arrange(year, borough, sale_date)
+}
+
+```
+
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+# Create cleaned tables for each period
+sales_clean_2013_2017 <- clean_2013_2017(sales_raw_2013_2017)
+sales_clean_2018_2019 <- clean_2018_2019(sales_raw_2018_2019)
+sales_clean_2020_2023 <- clean_2020_2023(sales_raw_2020_2023)
+```
+
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+library(dplyr)
+
+# Make sure sale_date is Date in every piece
+sales_clean_2013_2017 <- sales_clean_2013_2017 %>%
+  mutate(sale_date = as.Date(sale_date))
+
+sales_clean_2018_2019 <- sales_clean_2018_2019 %>%
+  mutate(sale_date = as.Date(sale_date))
+
+sales_clean_2020_2023 <- sales_clean_2020_2023 %>%
+  mutate(sale_date = as.Date(sale_date))
+
+# ---- Combine all years 2013–2023 ----
+sales_clean_2013_2023 <- bind_rows(
+  sales_clean_2013_2017,
+  sales_clean_2018_2019,
+  sales_clean_2020_2023
+) %>%
+  arrange(year, borough, sale_date)
+
+sales_clean_2013_2023 <- sales_clean_2013_2023 |> filter(zip_code != "0") 
+
+# ---- Final quick checks ----
+#message("Combined 2013–2023:")
+#print(table(sales_clean_2013_2023$year))
+
+#range(sales_clean_2013_2023$sale_date, na.rm = TRUE)
+#summary(sales_clean_2013_2023$sale_price)
+
+head(sales_clean_2013_2023)
+tail(sales_clean_2013_2023)
+```
+These are previews of our cleaned Property Sales data from 2013-2023.
+
+## Film Permit Data
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+
+
+
+permits <- read_csv("https://raw.githubusercontent.com/NewYorkCityCouncil/film_industry_hearing/refs/heads/master/permits.csv") 
+
+write_csv(permits, file = "permits_data.csv")
+
+
+
+Recent_Permits <- read.csv("C:/Users/Ethan/Downloads/Film_Permits_20251105.csv")
+
+write_csv(permits, file = "Recent_Permits.csv")
+
+
+permits_found <- read_csv("https://raw.githubusercontent.com/NewYorkCityCouncil/film_industry_hearing/refs/heads/master/permits_mar23.csv")
+
+write_csv(permits, file = "permits_found.csv") 
+
+
+
+Table1 <- Recent_Permits |>
+  rename_with(tolower) |>
+  mutate(startdatetime = mdy_hms(startdatetime)) |>
+  mutate(enddatetime = mdy_hms(enddatetime)) |>
+  mutate(enteredon = mdy_hms(enteredon))
+  
+Table2 <- permits_found |>
+  rename(communityboard.s. = communityboard_s,
+         policeprecinct.s. = policeprecinct_s,
+         zipcode.s. = zipcode_s)
+
+combined <- full_join(Table1, Table2)
+
+
+
+
+One_Recent_Permits <- Recent_Permits |>
+rename(eventid = EventID, eventtype = EventType) 
+
+
+
+combined1 <- combined |>
+  select(-parkingheld)
+
+
+
+
+large_permits <- permits |>
+  distinct(eventid, .keep_all = TRUE) |>
+  select(-main, -cross_st_1, -cross_st_2) |>
+  rename(policeprecinct.s.= policeprecinct_s, communityboard.s. = communityboard_s, zipcode.s. = zipcode_s)
+
+
+  clean_permits <- full_join(combined1, large_permits)
+  
+  clean_permits <- clean_permits |>
+    filter(startdatetime >= as.Date("2013-01-01") & startdatetime <= as.Date("2023-12-31"), 
+           eventtype == ("Shooting Permit")) |>
+    separate_rows(zipcode.s., sep = ",\\s*") |>
+    mutate(zipcode = trimws(zipcode.s.),
+           start_year = year(startdatetime),
+           start_month = month(startdatetime),
+           start_day = day(startdatetime),
+           end_year = year(enddatetime),
+           end_month = month(enddatetime),
+           end_day = day(enddatetime)) |>
+    select(-communityboard.s., -policeprecinct.s., -country, -zipcode.s., - enteredon, -startdatetime, -enddatetime) |>
+    relocate(eventid, eventtype, start_year, start_month, start_day, end_year, end_month, end_day)
+  
+  clean_permits <- clean_permits |>
+    group_by(zipcode, start_year) |>
+    mutate(zip_count_by_year = n()) |>
+    group_by(zipcode, start_year, start_month) |>
+    mutate(zip_count_by_month = n()) |>
+    group_by(zipcode) |>
+    mutate(zip_count_total = n()) |>
+    ungroup()
+  
+  clean_permits <- clean_permits |> filter(zipcode != "0")
+  
+
+clean_permits
+```
+These are view of our film permiting data from 2013-2023.Some of the information is not very important and can become more uniform later on in our work with all the data later down the line.
+
+
+## Rental Data
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+if(!dir.exists(file.path("data", "finalproject"))){
+  dir.create(file.path("data", "finalproject"), showWarnings=FALSE, recursive=TRUE)
+}
+
+library <- function(pkg){
+  ## Mask base::library() to automatically install packages if needed
+  ## Masking is important here so downlit picks up packages and links
+  ## to documentation
+  pkg <- as.character(substitute(pkg))
+  options(repos = c(CRAN = "https://cloud.r-project.org"))
+  if(!require(pkg, character.only=TRUE, quietly=TRUE)) install.packages(pkg)
+  stopifnot(require(pkg, character.only=TRUE, quietly=TRUE))
+}
+
+library(tidyverse)
+library(glue)
+library(readxl)
+library(tidycensus)
+
+get_acs_all_years <- function(variable, geography="zcta",
+                              start_year=2013, end_year=2023){
+  fname <- glue("{variable}_{geography}_{start_year}_{end_year}.csv")
+  fname <- file.path("data", "finalproject", fname)
+  
+  if(!file.exists(fname)){
+    YEARS <- seq(start_year, end_year)
+    YEARS <- YEARS[YEARS != 2020] # Drop 2020 - No survey (covid)
+    
+    ALL_DATA <- map(YEARS, function(yy){
+      tidycensus::get_acs(geography, variable, year=yy, survey="acs5") |>
+        mutate(year=yy) |>
+        select(-moe, -variable) |>
+        rename(!!variable := estimate)
+    }) |> bind_rows()
+    
+    write_csv(ALL_DATA, fname)
+  }
+  
+  read_csv(fname, show_col_types=FALSE)
+}
+
+NYC_ZCTAS <- c(
+  # Bronx (005)
+  "10451", "10452", "10453", "10454", "10455", "10456", "10457", "10458", 
+  "10459", "10460", "10461", "10462", "10463", "10464", "10465", "10466", 
+  "10467", "10468", "10469", "10470", "10471", "10472", "10473", "10474", 
+  "10475",
+  # Brooklyn (047) - Kings County
+  "11201", "11203", "11204", "11205", "11206", "11207", "11208", "11209", 
+  "11210", "11211", "11212", "11213", "11214", "11215", "11216", "11217", 
+  "11218", "11219", "11220", "11221", "11222", "11223", "11224", "11225", 
+  "11226", "11228", "11229", "11230", "11231", "11232", "11233", "11234", 
+  "11235", "11236", "11237", "11238", "11239",
+  # Manhattan (061) - New York County
+  "10001", "10002", "10003", "10004", "10005", "10006", "10007", "10009", 
+  "10010", "10011", "10012", "10013", "10014", "10016", "10017", "10018", 
+  "10019", "10020", "10021", "10022", "10023", "10024", "10025", "10026", 
+  "10027", "10028", "10029", "10030", "10031", "10032", "10033", "10034", 
+  "10035", "10036", "10037", "10038", "10039", "10040", "10044",
+  # Queens (081)
+  "11101", "11102", "11103", "11104", "11105", "11106", "11354", "11355", 
+  "11356", "11357", "11358", "11360", "11361", "11362", "11363", "11364", 
+  "11365", "11366", "11367", "11368", "11369", "11370", "11371", "11372", 
+  "11373", "11374", "11375", "11377", "11378", "11379", "11385", "11411", 
+  "11412", "11413", "11414", "11415", "11416", "11417", "11418", "11419", 
+  "11420", "11421", "11422", "11423", "11426", "11427", "11428", "11429", 
+  "11432", "11433", "11434", "11435", "11436", "11691", "11692", "11693", 
+  "11694", "11695", "11697",
+  # Staten Island (085) - Richmond County
+  "10301", "10302", "10303", "10304", "10305", "10306", "10307", "10308", 
+  "10309", "10310", "10311", "10312", "10314"
+)
+# Household income (12 month)
+INCOME <- get_acs_all_years("B19013_001") |>
+  rename(household_income = B19013_001)
+INCOME <- INCOME |>
+  filter(GEOID %in% NYC_ZCTAS)
+
+# Monthly rent
+RENT <- get_acs_all_years("B25064_001") |>
+  rename(monthly_rent = B25064_001)
+RENT  <- RENT  |>
+  filter(GEOID %in% NYC_ZCTAS)
+
+# Combine tables
+JOIN_TABLE <- INCOME |>
+  left_join(RENT, by = c("GEOID", "year","NAME" )) |>
+  rename(zipcode = "GEOID") |>
+  select(-NAME)
+
+## optional function to format the column name
+format_titles <- function(df){
+  colnames(df) <- str_replace_all(colnames(df), "_", " ") |> str_to_title()
+  df
+}
+JOIN_TABLE |> 
+  format_titles()
+
+JOIN_TABLE
+
+```
+### Scope of the Data
+The data we collected are from 3 different data sets that were corralled and cleaned up by my team. The first being Property Sales data in NYC from 2013-2023. This would be individual property sales with their sale value, ZIP code, neighborhood, and borough. For the sake of our question, the only necessary values we need to pull from is the ZIP code, year, and sale value. For the second data set, we have the permit data which contains the year that filming began and the year it ended, the event id, the event type, ZIP code, and additional details that are not important for our purposes. However, we find that there are significant values that are useful such as the ZIP code counts by year and additional specifications. Being that the ZIP codes maintain a yearly count, it makes filtering the data a lot easier for us from the jump. We would only need to get the start year, the ZIP code, and the yearly count for the ZIP code opposed to parsing through and getting a count from all the individual events. Lastly, we have the monthly rent data set that contains average monthly rent amounts for each ZIP code for each year. Cleaned up and filtered, we can join the data to participate in interesting conversation regarding the effect that film permitting has on the real estate pricing.
+
+
+
+
+### Do Neighborhoods with higher film permit density experience faster housing price or rent growth?
+
+This question is taken into consideration as we evaluate the strength that film permitting has on the real estate market. As we observe more permits in different ZIP codes, does it translate into market value for housing or rentals? This is a question that contributes directly to the overarching question in testing whether it’s a catalyst or indicator. To evaluate this we first must look at our data and see what we need to pull out to manipulate. We want to join the data, our permits, property sales, and average rent. However, the first thing we need is to simplify the data for the purpose of our question. Seeing as we have a lot of individual data points, we can simplify it through condensing them through averages. We grab the permit data, and we get a permit count per ZIP code for each year. We also take the average yearly sales amount for each Zip code. Then for the yearly rental cost, we take the monthly average we are given and transmute it to an annual rent. This way we have all the components we need for the purpose of our question. From these edits to the data sets, we can simplify the tables and join them by their ZIP code and their year so that we can look at each individual ZIP code and the density of the filming permits. Through visualization, we can go on to see whether this is an effective measure for predicting growth in our property pricing or rental costs.
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+#What we need for the question
+
+#zipcode's permit counts per year
+permits_yearly <- clean_permits %>%
+  distinct(zipcode, start_year, .keep_all = TRUE) %>%
+  select(zipcode, start_year, permits = zip_count_by_year) %>%
+  rename(year = start_year)
+
+permits_yearly
+
+#average sales value per zipcode per year
+avg_sale_yearly <- sales_clean_2013_2023 %>%
+  group_by(zip_code, year) %>%
+  summarise(
+    avg_sale_price = mean(sale_price, na.rm = TRUE),
+  .groups = "drop"  
+  ) %>%
+  rename(zipcode = zip_code)
+avg_sale_yearly
+
+#Zipcodes with average monthly average rent
+yearly_rent <- JOIN_TABLE %>%
+  select(zipcode, year, monthly_rent) %>%
+  mutate(annual_rent = monthly_rent * 12)
+
+yearly_rent
+
+all_joint <- permits_yearly %>%
+  full_join(avg_sale_yearly, by = c("zipcode", "year")) %>%
+  full_join(yearly_rent,     by = c("zipcode", "year"))
+
+all_joint
+```
+
+## Additonal Parameters
+Another parameter we must consider creating to compare year-to-year is a growth variable for both average sale price and annual rent respectively. Through this, we go on to create some more new variables, price growth and rent growth to produce our visuals to analyze what is going on with our data. These are created using lag to compare to the previous year for each. We then create different visualizations of the comparisons for both the housing price growth and rental growth against the film permits. As we examined these visuals, I found that there were some outlier data points that take away focus from a potentially cleaner visualization and we go on to filter those out for outliers that show a greater growth rate than 10. We choose to work with scatter plots for both rental and property sales as this would be an easy way to view a trend if there is one regarding what is considered between film permit density and year-over-year growth. We also take the rental ratios for their growth and compare them to the densities that appear with New York City neighborhoods.
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+library(dplyr)
+
+all_joint <- all_joint %>%
+  arrange(zipcode, year) %>%
+  group_by(zipcode) %>%
+  mutate(
+    price_growth = (avg_sale_price - lag(avg_sale_price)) / lag(avg_sale_price),
+    rent_growth  = (annual_rent - lag(annual_rent)) / lag(annual_rent)
+  ) %>%
+  ungroup()
+
+all_joint
+
+library(ggplot2)
+
+all_joint_clean <- all_joint %>%
+  filter(price_growth < 10) # remove any price_growth that can appear as outliers
+  
+
+
+# Housing price growth vs film permits
+ggplot(all_joint_clean, aes(x = permits, y = price_growth)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", color = "blue") +
+  labs(
+    title = "Housing Price Growth vs Film Permits",
+    x = "Number of Film Permits",
+    y = "Year-over-Year Price Growth"
+  )
+
+
+
+# Rent growth vs film permits
+ggplot(all_joint, aes(x = permits, y = rent_growth)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", color = "red") +
+  labs(
+    title = "Rent Growth vs Film Permits",
+    x = "Number of Film Permits",
+    y = "Year-over-Year Rent Growth"
+  )
+
+
+max_permits <- max(all_joint_clean$permits, na.rm = TRUE)
+
+# Create bins dynamically using cut()
+# Create bins and label with actual ranges
+bin_breaks <- seq(0, max_permits, length.out = 6)  # 5 bins
+
+all_joint_clean <- all_joint_clean %>%
+  mutate(
+    permits_bin = cut(
+      permits,
+      breaks = bin_breaks,
+      include.lowest = TRUE,
+      labels = paste0(
+        round(head(bin_breaks, -1)), 
+        "-", 
+        round(tail(bin_breaks, -1))
+      )
+    )
+  )
+
+# Summarize and plot
+all_joint_clean %>%
+  group_by(permits_bin) %>%
+  summarize(
+    avg_price_growth = mean(price_growth, na.rm = TRUE),
+    avg_rent_growth  = mean(rent_growth, na.rm = TRUE),
+    n = n()
+  ) %>%
+  ggplot(aes(x = permits_bin, y = avg_price_growth)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = round(avg_price_growth, 3)), vjust = -0.5) +
+  labs(
+    title = "Average Housing Price Growth by Film Permit Range",
+    x = "Film Permit Range",
+    y = "Average Price Growth"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+all_joint_clean %>%
+  group_by(permits_bin) %>%
+  summarize(
+    avg_price_growth = mean(price_growth, na.rm = TRUE),
+    avg_rent_growth  = mean(rent_growth, na.rm = TRUE),
+    n = n()
+  ) %>%
+  ggplot(aes(x = permits_bin, y = avg_rent_growth)) +
+    geom_col(fill = "steelblue") +
+    geom_text(aes(label = round(avg_rent_growth, 3)), vjust = -0.5) +
+    labs(
+      title = "Average Rental Price Growth by Film Permit Range",
+      x = "Film Permit Range",
+      y = "Average Price Growth"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+## At a Glance
+As we analyze these visualizations, we find that there is no trend that moves in accordance to the density of film permitting. They scatter plots are rather normally distributed but do not appear to show a definitive relationship between rental growth and permitting. This is applicable for both property sales and rental cost as they both do not show a line of fit that deviates from a straight line relative to our baseline.  As we evaluate the histogram that we made for average hosing growth rate, there also maintains no particular pattern for the average growth’s experienced.
+
+```{r}
+#| message: false
+#| warning: false
+#| code-fold: true
+
+library(dplyr)
+
+cor_price <- cor.test(
+  all_joint_clean$permits,
+  all_joint_clean$price_growth,
+  method = "pearson"
+)
+
+cor_rent <- cor.test(
+  all_joint_clean$permits,
+  all_joint_clean$rent_growth,
+  method = "pearson"
+)
+
+cor_price
+cor_rent
+
+
+```
+### Overview of Data Analysis
+Doing a quick correlation analysis, we also numerically find a very small correlation between film permits to either of the two rental growths. There are potential considerations for why this might be the case. Something to note and consider as that the average property sale amounts may not be the most accurate measure as each property is not uniform as not every house is sold each year and that there are some that may come to sale of greater value than the last year. Though this is not a perfect metric, there is low enough of a correlation to indicate that this may not have been a factor in showing the little significance this may have the property growth in correlation to film permitting densities.
+
+## What Do We Notice?
+When approaching the question from a logical perspective, this is totally reasonable because the filming process in most cases is not an attraction for most locals. Other than those that may be viewed already as high tourist or highly valued areas, most locations are not going to be brought about to public popularity to alter the demand to live in these areas. Especially for rent, it is unlikely that these activities in the neighborhood are catalysts for rental value in these cases. Though we find that there is not a specific significance pertaining to the density of filming, this doesn’t discount what knowledge we gain from the consideration of this question. This tells us that the frequency of the filming may not be important but that doesn’t detract from the location, potentially still being an important factor in determining price increases. In reference to the previous art on the topic, “Don’t Shoot the Pianist: Creative Firms,Workers, and Neighborhood Gentrification”, addresses the consideration of two different theories regarding neighborhood gentrification and building value in neighborhoods. It considers whether the artists pave way for value to be gained in the neighborhoods or if the creatives follow the wealth to neighborhoods as it is the trend. Similarly, our question brings into question whether the filming density is the cause of the rental growth, or it is potentially another factor at play. 
+
+We find that film density may not be as significant and contribute to our overarching question that may indicate there are more specific film production activities that may indicate the real estate value in each neighborhood. We address the potential that the artist, or in this case, the film permitting, is what draws the growth opposed to the film permitting being drawn to higher value neighborhoods. Contrarily, we should then consider that the film permitting may not be the important factor at play and may be more centered around known hot spots or well-known landmark locations that could play into the value as well as an uptick in film permitting.
+
+As we address other questions within our project, there is more information that comes about indicating how impactful film activity comes to be in determining property value within New York City neighborhoods. The other questions addressed by my team come to show that film activity may to be important to indicating neighborhood desirability, that align with already popular or influential locals. Comparatively to economic variables film production shows a modest correlation showing it may be reactionary to the neighborhood value opposed to the other way around.
+
+
+
+
+
+
+
+
+
